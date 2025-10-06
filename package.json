@@ -1,9 +1,10 @@
 {
-  "name": "logseq-plugin-git",
-  "version": "1.7.0",
+  "name": "logseq-git-with-sync",
+  "version": "1.8.0",
   "main": "dist/index.html",
   "logseq": {
-    "id": "logseq-git",
+    "id": "logseq-git-with-sync",
+    "title": "Git with Sync",
     "icon": "logo.png"
   },
   "scripts": {
