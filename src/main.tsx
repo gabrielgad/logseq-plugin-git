@@ -12,6 +12,9 @@ import {
   pullRebase,
   push,
   status,
+  initRepo,
+  testCredentials,
+  checkRemoteChanges,
 } from "./helper/git";
 import {
   checkStatus,
@@ -91,6 +94,15 @@ if (isDevelopment) {
         setPluginStyle(LOADING_STYLE);
         hidePopup();
 
+        // Auto pull-rebase before push if enabled
+        if (logseq.settings?.autoPullBeforePush) {
+          const hasRemoteChanges = await checkRemoteChanges();
+          if (hasRemoteChanges) {
+            logseq.UI.showMsg('Remote has changes, pulling before push...', 'info');
+            await pullRebase(false);
+          }
+        }
+
         const status = await checkStatus();
         const changed = status?.stdout !== "";
         if (changed) {
@@ -116,6 +128,13 @@ if (isDevelopment) {
         console.log("[faiz:] === hidePopup click");
         hidePopup();
       }),
+      initRepo: debounce(async function () {
+        console.log("[faiz:] === initRepo click");
+        setPluginStyle(LOADING_STYLE);
+        hidePopup();
+        await initRepo(true);
+        checkStatus();
+      }),
     };
 
     logseq.provideModel(operations);
@@ -126,6 +145,48 @@ if (isDevelopment) {
         '<a data-on-click="showPopup" class="button"><i class="ti ti-brand-git"></i></a><div id="plugin-git-content-wrapper"></div>',
     });
     logseq.useSettingsSchema(SETTINGS_SCHEMA);
+
+    // Periodic remote check (every 5 minutes)
+    let remoteCheckInterval: NodeJS.Timeout | null = null;
+    const startRemoteCheck = () => {
+      if (remoteCheckInterval) clearInterval(remoteCheckInterval);
+
+      if (logseq.settings?.checkRemotePeriodically) {
+        remoteCheckInterval = setInterval(async () => {
+          const hasChanges = await checkRemoteChanges();
+          if (hasChanges) {
+            logseq.UI.showMsg('⚠️ Remote repository has new changes. Pull to sync.', 'warning', { timeout: 10000 });
+
+            // Auto pull if enabled
+            if (logseq.settings?.autoSyncOnRemoteChanges) {
+              logseq.UI.showMsg('Auto-pulling remote changes...', 'info');
+              await pullRebase(true);
+              checkStatus();
+            }
+          }
+        }, 5 * 60 * 1000); // 5 minutes
+      }
+    };
+
+    // Listen for settings changes to handle button clicks
+    const settingsChangeHandler = (newSettings, oldSettings) => {
+      // Test Credentials button
+      if (newSettings.testCredentialsButton && !oldSettings.testCredentialsButton) {
+        testCredentials(true);
+        // Reset the button after a short delay
+        setTimeout(() => {
+          logseq.updateSettings({ testCredentialsButton: false });
+        }, 100);
+      }
+
+      // Remote check setting changed
+      if (newSettings.checkRemotePeriodically !== oldSettings.checkRemotePeriodically) {
+        startRemoteCheck();
+      }
+    };
+
+    logseq.onSettingsChanged(settingsChangeHandler);
+
     setTimeout(() => {
       const buttons = (logseq.settings?.buttons as string[])
         ?.map((title) => BUTTONS.find((b) => b.title === title))
@@ -176,6 +237,9 @@ if (isDevelopment) {
 
     if (logseq.settings?.autoCheckSynced) checkIsSynced();
     checkStatusWithDebounce();
+
+    // Start remote check if enabled
+    startRemoteCheck();
 
     if (top) {
       top.document?.addEventListener("visibilitychange", async () => {

@@ -147,7 +147,7 @@ export const push = async (showRes = true): Promise<IGitResult> => {
  * @returns The commit message.
  */
 export const commitMessage = () : string => {
-  
+
   let defaultMessage = "[logseq-plugin-git:commit]";
 
   switch (logseq.settings?.typeCommitMessage as string) {
@@ -171,5 +171,161 @@ export const commitMessage = () : string => {
       }
     default:
       return defaultMessage;
+  }
+}
+
+/**
+ * Test git credentials by attempting to ls-remote
+ * @returns Promise<IGitResult>
+ */
+export const testCredentials = async (showRes = true): Promise<IGitResult> => {
+  const domain = logseq.settings?.gitHostDomain as string;
+  const username = logseq.settings?.gitUsername as string;
+  const password = logseq.settings?.gitPassword as string;
+  const repoOwner = logseq.settings?.gitRepoOwner as string;
+  const repoName = logseq.settings?.gitRepoName as string;
+
+  // Validate required fields
+  if (!domain || !username || !password || !repoOwner || !repoName) {
+    const errorMsg = "Missing required fields. Please fill in Git Host Domain, Username, Password/Token, Repository Owner, and Repository Name.";
+    if (showRes) logseq.UI.showMsg(errorMsg, 'error');
+    return { exitCode: 1, stdout: '', stderr: errorMsg };
+  }
+
+  try {
+    // URL encode username and password to handle special characters like @, :, etc.
+    const encodedUsername = encodeURIComponent(username);
+    const encodedPassword = encodeURIComponent(password);
+    const remoteUrl = `https://${encodedUsername}:${encodedPassword}@${domain}/${repoOwner}/${repoName}.git`;
+
+    // Test credentials with ls-remote
+    const res = await execGitCommand(['ls-remote', remoteUrl, 'HEAD']);
+
+    if (res.exitCode === 0) {
+      if (showRes) logseq.UI.showMsg('✓ Credentials valid! Successfully connected to remote repository.', 'success');
+      console.log('[logseq-plugin-git] === Credentials test successful');
+      return { exitCode: 0, stdout: 'Credentials valid', stderr: '' };
+    } else {
+      if (showRes) logseq.UI.showMsg(`✗ Credential test failed: ${res.stderr || 'Repository not found or invalid credentials'}`, 'error');
+      return res;
+    }
+  } catch (error) {
+    const errorMsg = `Credential test failed: ${error}`;
+    if (showRes) logseq.UI.showMsg(errorMsg, 'error');
+    return { exitCode: 1, stdout: '', stderr: errorMsg };
+  }
+}
+
+/**
+ * Check if remote repository has new changes (is ahead of local)
+ * @returns Promise<boolean> - true if remote has changes
+ */
+export const checkRemoteChanges = async (): Promise<boolean> => {
+  try {
+    // Fetch from remote without merging
+    await execGitCommand(['fetch']);
+
+    // Check if remote is ahead
+    const res = await execGitCommand(['rev-list', 'HEAD..@{u}', '--count']);
+
+    if (res.exitCode === 0) {
+      const count = parseInt(res.stdout.trim());
+      return count > 0;
+    }
+    return false;
+  } catch (error) {
+    console.log('[logseq-plugin-git] === Error checking remote changes', error);
+    return false;
+  }
+}
+
+/**
+ * Initialize a git repository with HTTPS remote
+ * @returns Promise<IGitResult>
+ */
+export const initRepo = async (showRes = true): Promise<IGitResult> => {
+  const domain = logseq.settings?.gitHostDomain as string;
+  const username = logseq.settings?.gitUsername as string;
+  const password = logseq.settings?.gitPassword as string;
+  const repoOwner = logseq.settings?.gitRepoOwner as string;
+  const repoName = logseq.settings?.gitRepoName as string;
+  const branch = (logseq.settings?.gitBranch as string) || "main";
+  const userEmail = logseq.settings?.gitUserEmail as string;
+  const userName = logseq.settings?.gitUserName as string;
+
+  // Validate required fields
+  if (!domain || !username || !password || !repoOwner || !repoName) {
+    const errorMsg = "Missing required fields. Please fill in Git Host Domain, Username, Password/Token, Repository Owner, and Repository Name in settings.";
+    if (showRes) logseq.UI.showMsg(errorMsg, 'error');
+    return { exitCode: 1, stdout: '', stderr: errorMsg };
+  }
+
+  if (!userEmail || !userName) {
+    const errorMsg = "Missing git user configuration. Please fill in Git User Email and Git User Name in settings.";
+    if (showRes) logseq.UI.showMsg(errorMsg, 'error');
+    return { exitCode: 1, stdout: '', stderr: errorMsg };
+  }
+
+  try {
+    // Check if already initialized
+    const statusCheck = await execGitCommand(['status']);
+    if (statusCheck.exitCode === 0) {
+      const msg = "Repository already initialized.";
+      if (showRes) logseq.UI.showMsg(msg, 'warning');
+      return { exitCode: 1, stdout: '', stderr: msg };
+    }
+
+    // Initialize git repository
+    let res = await execGitCommand(['init']);
+    if (res.exitCode !== 0) {
+      if (showRes) logseq.UI.showMsg(`Git init failed: ${res.stderr}`, 'error');
+      return res;
+    }
+
+    // Configure user
+    await execGitCommand(['config', 'user.email', userEmail]);
+    await execGitCommand(['config', 'user.name', userName]);
+
+    // Create HTTPS remote URL with encoded credentials
+    const encodedUsername = encodeURIComponent(username);
+    const encodedPassword = encodeURIComponent(password);
+    const remoteUrl = `https://${encodedUsername}:${encodedPassword}@${domain}/${repoOwner}/${repoName}.git`;
+
+    // Add remote origin
+    res = await execGitCommand(['remote', 'add', 'origin', remoteUrl]);
+    if (res.exitCode !== 0) {
+      if (showRes) logseq.UI.showMsg(`Failed to add remote: ${res.stderr}`, 'error');
+      return res;
+    }
+
+    // Set default branch
+    res = await execGitCommand(['branch', '-M', branch]);
+    if (res.exitCode !== 0) {
+      if (showRes) logseq.UI.showMsg(`Failed to set branch: ${res.stderr}`, 'error');
+      return res;
+    }
+
+    // Create initial commit
+    await execGitCommand(['add', '.']);
+    res = await execGitCommand(['commit', '-m', 'Initial commit from Logseq']);
+    if (res.exitCode !== 0) {
+      if (showRes) logseq.UI.showMsg(`Failed to create initial commit: ${res.stderr}`, 'error');
+      return res;
+    }
+
+    // Set upstream and push
+    res = await execGitCommand(['push', '-u', 'origin', branch]);
+    if (res.exitCode !== 0) {
+      if (showRes) logseq.UI.showMsg(`Repository initialized locally, but push failed: ${res.stderr}. You may need to create the repository on ${domain} first.`, 'warning');
+      return res;
+    }
+
+    if (showRes) logseq.UI.showMsg('Repository initialized successfully!', 'success');
+    console.log('[logseq-plugin-git] === Repository initialized');
+    return { exitCode: 0, stdout: 'Repository initialized successfully', stderr: '' };
+  } catch (error) {
+    const errorMsg = `Initialization failed: ${error}`;
+    if (showRes) logseq.UI.showMsg(errorMsg, 'error');
+    return { exitCode: 1, stdout: '', stderr: errorMsg };
   }
 }
